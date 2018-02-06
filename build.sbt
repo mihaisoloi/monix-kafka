@@ -200,7 +200,8 @@ lazy val kafka1x = project.in(file("kafka-1.0.x"))
   .settings(
     name := "monix-kafka-1x",
     libraryDependencies ++= Seq(
-      "org.apache.kafka" %  "kafka-clients" % "1.0.0" exclude("org.slf4j","slf4j-log4j12") exclude("log4j", "log4j")
+      "org.apache.kafka" %  "kafka-clients" % "1.0.0" exclude("org.slf4j","slf4j-log4j12") exclude("log4j", "log4j"),
+      "org.apache.kafka" %  "kafka-streams" % "1.0.0" exclude("org.slf4j","slf4j-log4j12") exclude("log4j", "log4j")
     )
   )
 
