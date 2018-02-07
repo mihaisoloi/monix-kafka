@@ -18,11 +18,10 @@ package monix.kafka
 
 import java.io.File
 import java.util.Properties
-
 import com.typesafe.config.{Config, ConfigFactory}
 import monix.kafka.config._
-
 import scala.concurrent.duration._
+import org.apache.kafka.clients.CommonClientConfigs._
 
 /** Configuration for Kafka Consumer.
   *
@@ -34,7 +33,16 @@ import scala.concurrent.duration._
   * @param bootstrapServers is the `bootstrap.servers` setting,
   *        a list of host/port pairs to use for establishing
   *        the initial connection to the Kafka cluster.
-  *
+  *        The client will make use of all servers irrespective
+  *        of which servers are specified here for bootstrapping&mdash;
+  *        this list only impacts the initial hosts used to discover
+  *        the full set of servers. This list should be in the form
+  *        <code>host1:port1,host2:port2,...</code>. Since these servers
+  *        are just used for the initial connection to discover
+  *        the full cluster membership (which may change dynamically),
+  *        this list need not contain the full set of servers
+  *        (you may want more than one, though, in case a server is down).
+
   * @param fetchMinBytes is the `fetch.min.bytes` setting,
   *        the minimum amount of data the server should return
   *        for a fetch request.
@@ -163,9 +171,12 @@ import scala.concurrent.duration._
   *
   * @param metricReporters is the `metric.reporters` setting.
   *         A list of classes to use as metrics reporters. Implementing the
-  *         `MetricReporter` interface allows plugging in classes that will
-  *         be notified of new metric creation. The JmxReporter is always
-  *         included to register JMX statistics
+  *         <code>org.apache.kafka.common.metrics.MetricsReporter</code> interface
+  *         allows plugging in classes that will be notified of new metric creation.
+  *         The JmxReporter is always included to register JMX statistics
+  *
+  * @param metricsRecordingLevel is the `metrics.recording.level` setting.
+  *        The highest recording level for metrics.
   *
   * @param metricsNumSamples is the `metrics.num.samples` setting.
   *         The number of samples maintained to compute metrics.
@@ -182,6 +193,13 @@ import scala.concurrent.duration._
   *        given host. This avoids repeatedly connecting to a host in a
   *        tight loop. This backoff applies to all requests sent by the
   *        consumer to the broker.
+  *
+  * @param reconnectBackoffMaxTime is the `reconnect.backoff.max.ms` setting.
+  *        The maximum amount of time in milliseconds to wait when reconnecting
+  *        to a broker that has repeatedly failed to connect. If provided, the
+  *        backoff per host will increase exponentially for each consecutive
+  *        connection failure, up to this maximum. After calculating the backoff
+  *        increase, 20% random jitter is added to avoid connection storms.
   *
   * @param retryBackoffTime is the `retry.backoff.ms` setting.
   *        The amount of time to wait before attempting to retry a failed
@@ -231,16 +249,33 @@ final case class KafkaConsumerConfig(
   fetchMaxWaitTime: FiniteDuration,
   metadataMaxAge: FiniteDuration,
   metricReporters: List[String],
+  metricsRecordingLevel: String, //TODO: add configs in default.conf
   metricsNumSamples: Int,
   metricsSampleWindow: FiniteDuration,
   reconnectBackoffTime: FiniteDuration,
+  reconnectBackoffMaxTime: FiniteDuration, //TODO: add configs in default.conf
   retryBackoffTime: FiniteDuration,
   observableCommitType: ObservableCommitType,
   observableCommitOrder: ObservableCommitOrder,
   observableSeekToEndOnStart: Boolean) {
 
   def toMap: Map[String,String] = Map(
-    "bootstrap.servers" -> bootstrapServers.mkString(","),
+    // Common settings shared by producer, consumer and streams APIs
+    BOOTSTRAP_SERVERS_CONFIG -> bootstrapServers.mkString(","),
+    METADATA_MAX_AGE_CONFIG -> metadataMaxAge.toMillis.toString,
+    SEND_BUFFER_CONFIG -> sendBufferInBytes.toString,
+    RECEIVE_BUFFER_CONFIG -> receiveBufferInBytes.toString,
+    CLIENT_ID_CONFIG -> clientId,
+    RECONNECT_BACKOFF_MS_CONFIG -> reconnectBackoffTime.toMillis.toString,
+    RECONNECT_BACKOFF_MAX_MS_CONFIG -> reconnectBackoffMaxTime.toMillis.toString,
+    RETRY_BACKOFF_MS_CONFIG -> retryBackoffTime.toMillis.toString,
+    METRICS_SAMPLE_WINDOW_MS_CONFIG -> metricsSampleWindow.toMillis.toString,
+    METRICS_NUM_SAMPLES_CONFIG -> metricsNumSamples.toString,
+    METRICS_RECORDING_LEVEL_CONFIG -> metricsRecordingLevel.toString,
+    METRIC_REPORTER_CLASSES_CONFIG -> metricReporters.mkString(","),
+    SECURITY_PROTOCOL_CONFIG -> securityProtocol.id,
+    CONNECTIONS_MAX_IDLE_MS_CONFIG -> connectionsMaxIdleTime.toMillis.toString,
+    REQUEST_TIMEOUT_MS_CONFIG -> requestTimeout.toMillis.toString,
     "fetch.min.bytes" -> fetchMinBytes.toString,
     "group.id" -> groupId,
     "heartbeat.interval.ms" -> heartbeatInterval.toMillis.toString,
@@ -252,31 +287,19 @@ final case class KafkaConsumerConfig(
     "ssl.truststore.password" -> sslTrustStorePassword.orNull,
     "ssl.truststore.location" -> sslTrustStoreLocation.orNull,
     "auto.offset.reset" -> autoOffsetReset.id,
-    "connections.max.idle.ms" -> connectionsMaxIdleTime.toMillis.toString,
     "enable.auto.commit" -> enableAutoCommit.toString,
     "exclude.internal.topics" -> excludeInternalTopics.toString,
     "max.poll.records" -> maxPollRecords.toString,
     "max.poll.interval.ms" -> maxPollInterval.toMillis.toString,
-    "receive.buffer.bytes" -> receiveBufferInBytes.toString,
-    "request.timeout.ms" -> requestTimeout.toMillis.toString,
     "sasl.kerberos.service.name" -> saslKerberosServiceName.orNull,
     "sasl.mechanism" -> saslMechanism,
-    "security.protocol" -> securityProtocol.id,
-    "send.buffer.bytes" -> sendBufferInBytes.toString,
     "ssl.enabled.protocols" -> sslEnabledProtocols.map(_.id).mkString(","),
     "ssl.keystore.type" -> sslKeystoreType,
     "ssl.protocol" -> sslProtocol.id,
     "ssl.provider" -> sslProvider.orNull,
     "ssl.truststore.type" -> sslTruststoreType,
     "check.crcs" -> checkCRCs.toString,
-    "client.id" -> clientId,
-    "fetch.max.wait.ms" -> fetchMaxWaitTime.toMillis.toString,
-    "metadata.max.age.ms" -> metadataMaxAge.toMillis.toString,
-    "metric.reporters" -> metricReporters.mkString(","),
-    "metrics.num.samples" -> metricsNumSamples.toString,
-    "metrics.sample.window.ms" -> metricsSampleWindow.toMillis.toString,
-    "reconnect.backoff.ms" -> reconnectBackoffTime.toMillis.toString,
-    "retry.backoff.ms" -> retryBackoffTime.toMillis.toString
+    "fetch.max.wait.ms" -> fetchMaxWaitTime.toMillis.toString
   )
 
   def toProperties: Properties = {
@@ -376,7 +399,22 @@ object KafkaConsumerConfig {
       else None
 
     KafkaConsumerConfig(
-      bootstrapServers = config.getString("bootstrap.servers").trim.split("\\s*,\\s*").toList,
+      // Common settings shared by producer, consumer and streams APIs
+      bootstrapServers = config.getString(BOOTSTRAP_SERVERS_CONFIG).trim.split("\\s*,\\s*").toList,
+      metadataMaxAge = config.getInt(METADATA_MAX_AGE_CONFIG).millis,
+      sendBufferInBytes = config.getInt(SEND_BUFFER_CONFIG),
+      receiveBufferInBytes = config.getInt(RECEIVE_BUFFER_CONFIG),
+      clientId = config.getString(CLIENT_ID_CONFIG),
+      reconnectBackoffTime = config.getInt(RECONNECT_BACKOFF_MS_CONFIG).millis,
+      reconnectBackoffMaxTime = config.getInt(RECONNECT_BACKOFF_MAX_MS_CONFIG).millis,
+      retryBackoffTime = config.getInt(RETRY_BACKOFF_MS_CONFIG).millis,
+      metricsSampleWindow = config.getInt(METRICS_SAMPLE_WINDOW_MS_CONFIG).millis,
+      metricsNumSamples = config.getInt(METRICS_NUM_SAMPLES_CONFIG),
+      metricsRecordingLevel = config.getString(METRICS_RECORDING_LEVEL_CONFIG),
+      metricReporters = config.getString(METRIC_REPORTER_CLASSES_CONFIG).trim.split("\\s*,\\s*").toList,
+      securityProtocol = SecurityProtocol(config.getString(SECURITY_PROTOCOL_CONFIG)),
+      connectionsMaxIdleTime = config.getInt(CONNECTIONS_MAX_IDLE_MS_CONFIG).millis,
+      requestTimeout = config.getInt(REQUEST_TIMEOUT_MS_CONFIG).millis,
       fetchMinBytes = config.getInt("fetch.min.bytes"),
       groupId = config.getString("group.id"),
       heartbeatInterval = config.getInt("heartbeat.interval.ms").millis,
@@ -388,31 +426,20 @@ object KafkaConsumerConfig {
       sslTrustStorePassword = getOptString("ssl.truststore.password"),
       sslTrustStoreLocation = getOptString("ssl.truststore.location"),
       autoOffsetReset = AutoOffsetReset(config.getString("auto.offset.reset")),
-      connectionsMaxIdleTime = config.getInt("connections.max.idle.ms").millis,
       enableAutoCommit = config.getBoolean("enable.auto.commit"),
       excludeInternalTopics = config.getBoolean("exclude.internal.topics"),
       maxPollRecords = config.getInt("max.poll.records"),
       maxPollInterval = config.getInt("max.poll.interval.ms").millis,
-      receiveBufferInBytes = config.getInt("receive.buffer.bytes"),
-      requestTimeout = config.getInt("request.timeout.ms").millis,
       saslKerberosServiceName = getOptString("sasl.kerberos.service.name"),
       saslMechanism = config.getString("sasl.mechanism"),
-      securityProtocol = SecurityProtocol(config.getString("security.protocol")),
-      sendBufferInBytes = config.getInt("send.buffer.bytes"),
       sslEnabledProtocols = config.getString("ssl.enabled.protocols").split("\\s*,\\s*").map(SSLProtocol.apply).toList,
       sslKeystoreType = config.getString("ssl.keystore.type"),
       sslProtocol = SSLProtocol(config.getString("ssl.protocol")),
       sslProvider = getOptString("ssl.provider"),
       sslTruststoreType = config.getString("ssl.truststore.type"),
       checkCRCs = config.getBoolean("check.crcs"),
-      clientId = config.getString("client.id"),
       fetchMaxWaitTime = config.getInt("fetch.max.wait.ms").millis,
-      metadataMaxAge = config.getInt("metadata.max.age.ms").millis,
-      metricReporters = config.getString("metric.reporters").trim.split("\\s*,\\s*").toList,
-      metricsNumSamples = config.getInt("metrics.num.samples"),
-      metricsSampleWindow = config.getInt("metrics.sample.window.ms").millis,
-      reconnectBackoffTime = config.getInt("reconnect.backoff.ms").millis,
-      retryBackoffTime = config.getInt("retry.backoff.ms").millis,
+      // Monix specific settings
       observableCommitType = ObservableCommitType(config.getString("monix.observable.commit.type")),
       observableCommitOrder = ObservableCommitOrder(config.getString("monix.observable.commit.order")),
       observableSeekToEndOnStart = config.getBoolean("monix.observable.seekEnd.onStart")
